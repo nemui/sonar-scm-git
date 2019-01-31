@@ -38,7 +38,6 @@ import org.eclipse.jgit.lib.Repository;
 import org.sonar.api.batch.fs.InputFile;
 import org.sonar.api.batch.scm.BlameCommand;
 import org.sonar.api.batch.scm.BlameLine;
-import org.sonar.api.internal.apachecommons.io.FileUtils;
 import org.sonar.api.scan.filesystem.PathResolver;
 import org.sonar.api.utils.log.Logger;
 import org.sonar.api.utils.log.Loggers;
@@ -78,7 +77,7 @@ public class JGitBlameCommand extends BlameCommand {
               if (lines.get(i).contains("[submodule")) {
                 String pathLine = lines.get(i + 1);
                 String submodulePath = pathLine.substring(pathLine.indexOf(pathToken) + pathTokenLength);
-                File subBaseDir = FileUtils.getFile(basedir.getAbsolutePath() + "/" +submodulePath);
+                File subBaseDir = new File(basedir.getAbsolutePath() + "/" +submodulePath);
                 Repository subRepo = buildRepository(subBaseDir);
                 Git subGit = Git.wrap(subRepo);
                 submoduleList.add(new Submodule(subGit, subBaseDir, submodulePath));
