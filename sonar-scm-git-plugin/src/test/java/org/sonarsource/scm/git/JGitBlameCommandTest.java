@@ -295,7 +295,7 @@ public class JGitBlameCommandTest {
     jGitBlameCommand.blame(input, output);
 
     assertThat(logTester.logs()).first()
-      .matches(s -> s.contains("Shallow clone detected, no blame information will be provided."));
+            .matches(s -> s.contains("Shallow clone detected, no blame information will be provided."));
     verifyZeroInteractions(output);
 
     verify(analysisWarnings).addUnique(startsWith("Shallow clone detected"));
@@ -305,6 +305,40 @@ public class JGitBlameCommandTest {
     jGitBlameCommand.blame(input, output);
 
     verifyNoMoreInteractions(analysisWarnings);
+  }
+
+  @Test
+  public void testBlameSubmodules() throws IOException {
+    File projectDir = temp.newFolder();
+    javaUnzip(new File("test-repos/dummy-git-submodule.zip"), projectDir);
+
+    JGitBlameCommand jGitBlameCommand = newJGitBlameCommand();
+
+    File baseDir = new File(projectDir, "dummy-git-submodule");
+    DefaultFileSystem fs = new DefaultFileSystem(baseDir);
+    when(input.fileSystem()).thenReturn(fs);
+    DefaultInputFile inputFile = new TestInputFileBuilder("foo", "dummy-lib/lib")
+            .setModuleBaseDir(baseDir.toPath())
+            .build();
+    fs.add(inputFile);
+
+    BlameOutput blameResult = mock(BlameOutput.class);
+    when(input.filesToBlame()).thenReturn(Arrays.<InputFile>asList(inputFile));
+    jGitBlameCommand.blame(input, blameResult);
+
+    String author = "dmitry@digitgaming.com";
+    Date revisionDate1 = DateUtils.parseDateTime("2018-08-15T10:44:35+0100");
+    String revision1 = "983a582cbeb66a173252e9c4d87ffae30916b5f1";
+
+    Date revisionDate2 = DateUtils.parseDateTime("2019-01-31T10:31:34+0000");
+    String revision2 = "5e9673734563c7c39a057e3e6a78d6a833145b02";
+
+    List<BlameLine> expectedBlame = new LinkedList<>();
+    expectedBlame.add(new BlameLine().revision(revision1).date(revisionDate1).author(author));
+    expectedBlame.add(new BlameLine().revision(revision2).date(revisionDate2).author(author));
+    expectedBlame.add(new BlameLine().revision(revision2).date(revisionDate2).author(author));
+
+    verify(blameResult).blameResult(inputFile, expectedBlame);
   }
 
   private JGitBlameCommand newJGitBlameCommand() {

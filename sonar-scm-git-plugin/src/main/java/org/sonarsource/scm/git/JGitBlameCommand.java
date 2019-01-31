@@ -22,7 +22,10 @@ package org.sonarsource.scm.git;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
@@ -35,6 +38,7 @@ import org.eclipse.jgit.lib.Repository;
 import org.sonar.api.batch.fs.InputFile;
 import org.sonar.api.batch.scm.BlameCommand;
 import org.sonar.api.batch.scm.BlameLine;
+import org.sonar.api.internal.apachecommons.io.FileUtils;
 import org.sonar.api.scan.filesystem.PathResolver;
 import org.sonar.api.utils.log.Logger;
 import org.sonar.api.utils.log.Loggers;
@@ -45,6 +49,11 @@ public class JGitBlameCommand extends BlameCommand {
 
   private final PathResolver pathResolver;
   private final AnalysisWarningsWrapper analysisWarnings;
+  private static HashMap<File, List<Submodule>> submodules;
+
+  static {
+    submodules = new HashMap<>();
+  }
 
   public JGitBlameCommand(PathResolver pathResolver, AnalysisWarningsWrapper analysisWarnings) {
     this.pathResolver = pathResolver;
@@ -56,6 +65,32 @@ public class JGitBlameCommand extends BlameCommand {
     File basedir = input.fileSystem().baseDir();
     try (Repository repo = buildRepository(basedir); Git git = Git.wrap(repo)) {
       File gitBaseDir = repo.getWorkTree();
+      if (!submodules.containsKey(gitBaseDir)) {
+        List<Submodule> submoduleList = new ArrayList<>();
+        submodules.put(gitBaseDir, submoduleList);
+        Path gitmodulesPath = Paths.get(basedir.getPath() + "/.gitmodules");
+        if (Files.exists(gitmodulesPath)) {
+          try {
+            List<String> lines = Files.readAllLines(gitmodulesPath);
+            final String pathToken = "path = ";
+            final int pathTokenLength = pathToken.length();
+            for (int i = 0; i < lines.size(); i++) {
+              if (lines.get(i).contains("[submodule")) {
+                String pathLine = lines.get(i + 1);
+                String submodulePath = pathLine.substring(pathLine.indexOf(pathToken) + pathTokenLength);
+                File subBaseDir = FileUtils.getFile(basedir.getAbsolutePath() + "/" +submodulePath);
+                Repository subRepo = buildRepository(subBaseDir);
+                Git subGit = Git.wrap(subRepo);
+                submoduleList.add(new Submodule(subGit, subBaseDir, submodulePath));
+                i = i + 2;
+              }
+            }
+          }
+          catch (IOException e) {
+            LOG.info("Could not read .gitmodules file");
+          }
+        }
+      }
       if (Files.isRegularFile(gitBaseDir.toPath().resolve(".git/shallow"))) {
         LOG.warn("Shallow clone detected, no blame information will be provided. "
           + "You can convert to non-shallow with 'git fetch --unshallow'.");
@@ -104,6 +139,31 @@ public class JGitBlameCommand extends BlameCommand {
       LOG.debug("Unable to blame file {}. It is probably a symlink.", inputFile.relativePath());
       return;
     }
+
+    boolean noBlameInfo = (blameResult.getResultContents().size() > 0
+            && (blameResult.getSourceAuthor(0) == null || blameResult.getSourceCommit(0) == null));
+
+    if (noBlameInfo && submodules.get(gitBaseDir).size() > 0) {
+      for (Submodule sub : submodules.get(gitBaseDir)) {
+        if (filename.contains(sub.path)) {
+          String subFilename = pathResolver.relativePath(sub.baseDir, inputFile.file());
+          try {
+            blameResult = sub.git.blame()
+                    // Equivalent to -w command line option
+                    .setTextComparator(RawTextComparator.WS_IGNORE_ALL)
+                    .setFilePath(subFilename).call();
+          } catch (Exception e2) {
+            throw new IllegalStateException("Unable to blame file " + inputFile.relativePath(), e2);
+          }
+        }
+      }
+
+      if (blameResult == null) {
+        LOG.debug("Unable to blame file {}. It is probably a symlink.", inputFile.relativePath());
+        return;
+      }
+    }
+
     for (int i = 0; i < blameResult.getResultContents().size(); i++) {
       if (blameResult.getSourceAuthor(i) == null || blameResult.getSourceCommit(i) == null) {
         LOG.debug("Unable to blame file {}. No blame info at line {}. Is file committed? [Author: {} Source commit: {}]", inputFile.relativePath(), i + 1,
@@ -120,6 +180,18 @@ public class JGitBlameCommand extends BlameCommand {
       lines.add(lines.get(lines.size() - 1));
     }
     output.blameResult(inputFile, lines);
+  }
+
+  class Submodule {
+    public Git git;
+    public File baseDir;
+    public String path;
+
+    public Submodule(Git git, File baseDir, String path) {
+      this.git = git;
+      this.baseDir = baseDir;
+      this.path = path;
+    }
   }
 
 }
